@@ -1,0 +1,568 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Part0: Overview
+```{r Import data set, warning = FALSE}
+library(readr)
+Movies.original <- read_csv("tmdb_5000_movies.csv",show_col_types = FALSE)
+# head(Movies.original) 
+
+Movies.related <- subset(Movies.original, select = -c(homepage, id, overview, tagline, original_title, production_countries, keywords, spoken_languages, status)) #Delete irrelevant columns
+
+DuplicatedIndex <- duplicated(Movies.related) #Check for repeated information
+num_Duplicate <- which(DuplicatedIndex) #No duplicated movie
+
+Movies.organized <- data.frame(na.omit(Movies.related)) #Omit rows with NAs
+```
+
+
+# Part1: Data Visualization
+
+### 1.1 Categorical Features
+
+##### 1.1.1 Function of Counting Categories
+```{r Function of Counting Categories}
+library("stringr")
+Count.Category <- function(category){
+  count_name = c()
+  count_nums = c()
+  for (i in 1:nrow(Movies.organized)){
+    category_split = unlist(str_split(category[i], "\"")) # variable that stores the category names
+    for (k in 1:length(category_split)){
+      if (category_split[k]==": "){ 
+        category_name = category_split[k+1]
+        if (category_name %in% count_name){# if the category name already exists, add one
+          count_nums[which(count_name == category_name)] = count_nums[which(count_name == category_name)]+1
+        }
+        else{ # else, add the category name to the list of category
+          count_name = c(count_name,category_name)
+          count_nums[which(count_name == category_name)] = 1
+        }
+      }
+    }
+  }
+  names(count_nums) <- count_name # assign corresponding category names to the numbers
+  return(count_nums)
+}
+```
+
+##### 1.1.2 Distribution of Release Year
+```{r Histogram of Release Year, message = FALSE}
+release_year <- as.numeric(substring(Movies.organized$release_date, 1,4))
+release_year.sort <- sort(table(release_year))
+release_year.result <- summary(Movies.organized$release_date)
+hist(release_year, col = "lightblue", xlim = range(1916, 2017), ylim =range(0, 500), breaks = 40, ylab = 'number of movies', main ='Histogram of Release Year')
+# consider movies from 2000 to the most current data
+Movies.organized$release_year <- release_year
+Movies.organized <- Movies.organized[which(Movies.organized$release_year==2009),]
+```
+
+##### 1.1.3 Distribution of Split Genres
+```{r Bar Plot of Split Genres}
+genre_count_nums <- Count.Category(Movies.organized$genres)
+barplot(sort(genre_count_nums,decreasing=TRUE),las = 2,col="lightblue", main="Bar Plot of Genres",cex.names=0.7)
+```
+
+##### 1.1.4 Distribution of Top 5 Movie Production Companies
+```{r Pie Chart of Top 5 Companies}
+company_count_nums <- Count.Category(Movies.organized$production_companies)
+company_5 <- head(sort(company_count_nums,decreasing = T),5) # choose the top 5 companies that produce the largest number of movies
+pie(company_5,main="Pie Plot of Top 5 Movie Production Companies",cex=0.7)
+```
+
+##### 1.1.5 Distribution of Languages
+```{r Distribution of Languages}
+library(ggplot2)
+ggplot(Movies.organized,aes(x=original_language, y=popularity, color=original_language))+
+  ggtitle("Scatter Plot of Languages")+
+  geom_point()+
+  theme(legend.title=element_text(size = 9),legend.text=element_text(size = 9))
+```
+
+### 1.2 Correlation
+
+##### 1.2.1 Scatter Plot Matrix
+```{r Scatter Plot Matrix}
+pairs(~popularity+budget+revenue+runtime+vote_average+vote_count, data = Movies.organized, main = "Scatter Plot Matrix", panel = panel.smooth)
+```
+
+##### 1.2.2 Correlation Table
+```{r Correlation Table}
+res <- cor(data.frame(subset(Movies.organized, select = c(budget, revenue, runtime, vote_average, vote_count))))
+```
+
+
+#Part2: Data Processing
+
+### 2.1 Processing Missing Values
+
+##### 2.1.1 Numeric Variables
+```{r Function Check Zeros}
+check_zeros <- function(check_col){
+  num_zeros <- length(which(check_col == 0))
+  percentage_zeros <- num_zeros/nrow(check_col)
+  return(c(num_zeros,percentage_zeros))
+}
+```
+
+```{r Select numeric columns and apply function}
+num_cols <- which(unlist(lapply(Movies.organized, is.numeric))) 
+zeros_nums <- list()
+zeros_ratio <- list()
+for(i in 1:length(num_cols)){
+  check_col <- Movies.organized[,num_cols[i]]
+  zeros_nums[i] <- check_zeros(check_col)[1]
+  zeros_ratio[i] <- check_zeros(check_col)[2]
+}
+names(zeros_nums) = names(num_cols)
+zeroResult <- cbind(zeros_nums,zeros_ratio) 
+```
+
+```{r Removing rows with zero value}
+Movies.organized <- Movies.organized[which(!(Movies.organized$budget==0)),]
+Movies.organized <- Movies.organized[which(!(Movies.organized$revenue==0)),]
+Movies.organized <- Movies.organized[which(!(Movies.organized$runtime==0)),]
+Movies.organized <- Movies.organized[which(!(Movies.organized$vote_average==0)),]
+Movies.organized <- Movies.organized[which(!(Movies.organized$vote_count==0)),]
+Movies.organized.result <- summary(Movies.organized)
+```
+
+##### 2.1.2 Categorical Variables
+```{r Removing NAs in categorical variables}
+Movies.organized <- Movies.organized[which(!(Movies.organized$genres=='[]')),]
+Movies.organized <- Movies.organized[which(!(Movies.organized$production_companies=='[]')),]
+```
+
+### 2.2 Dummy Variables
+```{r Function of split}
+split.category = list()
+spe_category <- function(category){
+  for(i in 1:nrow(Movies.organized)){
+    category_split = unlist(str_split(category[i], "\""))
+    spe_list = c()
+    for(k in 1:length(category_split)){
+      if(category_split[k] == ": "){
+        spe_list = c(spe_list,category_split[k+1])
+      }
+    }
+    split.category[[i]] = spe_list
+  }
+  return(split.category)
+}
+```
+
+##### 2.2.1 Genre
+```{r Data set for regression}
+Movies <- data.frame(subset(Movies.organized, select = c(popularity,budget, revenue, runtime,vote_average, vote_count))) # create new data set with only numeric variables
+```
+
+```{r Split Genres}
+genre_count_nums <- Count.Category(Movies.organized$genres)
+genre_count.sort <- sort(genre_count_nums,decreasing=TRUE)
+genreNames.factor <- as.factor(names(genre_count_nums))
+
+split.genres <- spe_category(Movies.organized$genres)
+Movies.organized$genres <- split.genres # replace genres with a more readable form
+```
+
+```{r Create dummy variables for genres}
+Movies$dDrama <- 0 #(Dummy Drama)
+for (i in 1:length(Movies.organized$genres)){
+  if("Drama" %in% unlist(Movies.organized$genres[i])){
+    Movies$dDrama[i] <- 1
+  }
+}
+
+Movies$dComedy <- 0 #(Dummy Comedy)
+for (i in 1:length(Movies.organized$genres)){
+  if("Comedy" %in% unlist(Movies.organized$genres[i])){
+    Movies$dComedy[i] <- 1
+  }
+}
+
+Movies$dThriller <- 0 #(Dummy Thriller)
+for (i in 1:length(Movies.organized$genres)){
+  if("Thriller" %in% unlist(Movies.organized$genres[i])){
+    Movies$dThriller[i] <- 1
+  }
+}
+
+Movies$dAction <- 0 #(Dummy Action)
+for (i in 1:length(Movies.organized$genres)){
+  if("Action" %in% unlist(Movies.organized$genres[i])){
+    Movies$dAction[i] <- 1
+  }
+}
+
+Movies$dAdventure <- 0 #(Dummy Adventure)
+for (i in 1:length(Movies.organized$genres)){
+  if("Adventure" %in% unlist(Movies.organized$genres[i])){
+    Movies$dAdventure[i] <- 1
+  }
+}
+```
+
+##### 2.2.2 Language
+```{r Create dummy variables for languages}
+Movies$dEnglish <- 0 #(Dummy en)
+Movies$dEnglish <- ifelse(Movies.organized$original_language == 'en', 1,0)
+```
+
+##### 2.2.3 Company
+```{r Split Company, warning = FALSE}
+company_count_nums <- Count.Category(Movies.organized$production_companies)
+companyNames.factor <- as.factor(head(names(sort(company_count_nums,decreasing=TRUE)),5))
+
+split.company <- spe_category(Movies.organized$production_companies)
+Movies.organized$production_companies <- split.company # replace production company with a readable form
+```
+
+```{r Create dummy variables for Companies}
+Movies$dRelativity <- 0 #(Dummy Relativity Media)
+for (i in 1:length(Movies.organized$production_companies)){
+  if("Relativity Media" %in% unlist(Movies.organized$production_companies[i])){
+    Movies$dRelativity[i] <- 1
+  }
+}
+
+Movies$dUniversal <- 0 #(Dummy Universal Pictures)
+for (i in 1:length(Movies.organized$production_companies)){
+  if("Universal Pictures" %in% unlist(Movies.organized$production_companies[i])){
+    Movies$dUniversal[i] <- 1
+  }
+}
+Movies$dWarner <- 0 #(Dummy Warner Bros.)
+for (i in 1:length(Movies.organized$production_companies)){
+  if("Warner Bros." %in% unlist(Movies.organized$production_companies[i])){
+    Movies$dWarner[i] <- 1
+  }
+}
+
+Movies$dColumbia <- 0 #(Dummy Columbia Pictures)
+for (i in 1:length(Movies.organized$production_companies)){
+  if("Columbia Pictures" %in% unlist(Movies.organized$production_companies[i])){
+    Movies$dColumbia[i] <- 1
+  }
+}
+
+Movies$dDune <- 0 #(Dummy Dune Entertainment)
+for (i in 1:length(Movies.organized$production_companies)){
+  if("Dune Entertainment" %in% unlist(Movies.organized$production_companies[i])){
+    Movies$dDune[i] <- 1
+  }
+}
+```
+
+# Part3: Regressions
+
+### 3.1 Linear Regression
+
+##### 3.1.1 Full Model & Assumptions Checking
+```{r Full model, warning=FALSE}
+Full <- lm(popularity~.,data=Movies)
+Full.result <- summary(Full)
+par(mfrow=c(2,2))
+plot(Full)
+
+p_outlier <- rstandard(Full)[rstandard(Full) < -3 | rstandard(Full) > 3] # check for outliers that are three standard deviations away
+outlier_index <- names(p_outlier)[2:length(p_outlier)]
+potential_outlier <- data.frame(Movies.organized[outlier_index,])
+
+
+Movies.t <- cbind(Movies.organized$title,Movies)
+for(i in 1:nrow(Movies.t)){ # remove outliers
+  if(Movies.t$`Movies.organized$title`[i] %in% potential_outlier$title){
+    Movies.t <- Movies.t[-c(i),]
+  }
+}
+
+Movies <- Movies.t[,2:ncol(Movies.t)]
+Full <- lm(popularity~.,data=Movies) # full model after removing outliers
+Full.result <- summary(Full)
+par(mfrow=c(2,2))
+plot(Full)
+full.adjr <- Full.result$adj.r.squared
+Full.anova <- anova(Full)
+Full.SSE <- Full.anova[nrow(Full.anova),2]
+n = nrow(Movies)
+k = 16+2
+Full.AIC = n*log(Full.SSE/n)+2*k
+Full.BIC = n*log(Full.SSE/n)+k*log(n)
+```
+
+
+##### 3.1.2 Reduced Model by T-test
+```{r Reduce model using stepwise selection}
+# Backward Stepwise Selection
+backward <- step(Full,direction='backward',scope=formula(Full),trace=0)
+back.anova <- backward$anova
+# Forward Stepwise Selection
+Empty <- lm(popularity~1,data=Movies)
+forward <- step(Empty,direction='forward',scope=formula(Full),trace=0)
+forward.anova <- forward$anova
+# Both Stepwise Selection
+both <- step(Empty,direction='both',scope=formula(Full),trace=0)
+bi.anova <- both$anova
+# Reduced Models
+Reduced <- lm(formula = popularity ~ vote_count + budget + runtime + vote_average + dThriller + dDune + dEnglish + dDrama + dColumbia, data = Movies)
+par(mfrow=c(2,2))
+Reduced.result <- summary(Reduced)
+Reduced.adjr <- Reduced.result$adj.r.squared
+
+Reduced.anova <- anova(Reduced)
+Reduced.SSE = Reduced.anova[nrow(Reduced.anova),2]
+n = nrow(Movies)
+k = 9+2
+Reduced.AIC = n*log(Reduced.SSE/n)+2*k
+Reduced.BIC = n*log(Reduced.SSE/n)+k*log(n)
+```
+
+##### 3.1.3 Distribution of Y & Transformation Decision
+```{r Histogram of popularity}
+hist(Movies$popularity,breaks = 100,main="Histogram of Popularity")
+# The distribution of Y is right-skewed. (square root, cube root, and log)
+popularity.result <- summary(Movies$popularity)
+# The range is 1.729 - 150.438.
+```
+
+##### 3.1.4 Box-Cox Transformation
+```{r box cox transformation, warning=FALSE}
+library(MASS)
+bc <- boxcox(Full)
+lambda <- bc$x[which.max(bc$y)] # find lambda
+
+Movies.boxcox <- Movies # create new data set for box cox transformation
+Movies.boxcox$popularity <- (Movies$popularity^lambda-1)/lambda
+popularity_boxcox <- (Movies$popularity^lambda-1)/lambda
+
+boxcox.Full <- lm(popularity~.,data=Movies.boxcox) # regression on full model 
+
+Full.boxcox.result <- summary(boxcox.Full)
+Full.boxcox.adjr <- Full.boxcox.result$adj.r.squared
+par(mfrow=c(2,2))
+plot(boxcox.Full)
+
+boxcox.full.anova <- anova(boxcox.Full)
+Full.SSE.boxcox = boxcox.full.anova[nrow(boxcox.full.anova),2]
+n = nrow(Movies)
+k = 16+2
+Full.AIC.boxcox = n*log(Full.SSE.boxcox/n)+2*k
+Full.BIC.boxcox = n*log(Full.SSE.boxcox/n)+k*log(n)
+
+Empty.boxcox <- lm(popularity~1,data=Movies.boxcox)
+forward.boxcox <- step(Empty.boxcox,direction='forward',
+                    scope=formula(boxcox.Full),trace=0)
+forward.boxcox.anova <- forward.boxcox$anova
+
+boxcox.Reduced <- lm(formula = popularity ~ vote_count + budget + runtime + vote_average + dThriller + dEnglish + dDrama + dDune + dColumbia, data = Movies.boxcox) #regression
+
+boxcox.Reduced.result <- summary(boxcox.Reduced)
+Reduced.boxcox.adjr <- boxcox.Reduced.result$adj.r.squared
+par(mfrow=c(2,2))
+plot(boxcox.Reduced)
+
+boxcox.reduce.anova <- anova(boxcox.Reduced)
+Reduced.SSE.boxcox = boxcox.reduce.anova[nrow(boxcox.reduce.anova),2]
+n = nrow(Movies)
+k = 9+2
+Reduced.AIC.boxcox = n*log(Reduced.SSE.boxcox/n)+2*k
+Reduced.BIC.boxcox = n*log(Reduced.SSE.boxcox/n)+k*log(n)
+```
+
+##### 3.1.5 Log Transformation
+```{r log transformation, warning=FALSE}
+# due to unequal variance, transformation of y is used.
+Movies.log <- Movies
+Movies.log$popularity <- log(Movies$popularity)
+# full model with log
+Full.log <- lm(popularity~.,data=Movies.log)
+Full.log.result <- summary(Full.log)
+Full.log.adjr <- Full.log.result$adj.r.squared
+par(mfrow=c(2,2))
+plot(Full.log)
+
+log.full.anova <- anova(Full.log)
+Full.SSE.log = log.full.anova[nrow(log.full.anova),2]
+n = nrow(Movies)
+k = 16+2
+Full.AIC.log = n*log(Full.SSE.log/n)+2*k
+Full.BIC.log = n*log(Full.SSE.log/n)+k*log(n)
+
+# reduced model with log
+Empty.log <- lm(popularity~1,data=Movies.log)
+forward.log <- step(Empty.log,direction='forward',scope=formula(Full.log),trace=0)
+forward.log.anova <- forward.log$anova
+
+Reduced.log <- lm(formula = popularity ~ vote_count + dEnglish + budget + revenue + dThriller + runtime + vote_average + dDrama + dColumbia + dComedy, data = Movies.log) # regression
+
+Reduced.log.result <- summary(Reduced.log)
+Reduced.log.adjr <- Reduced.log.result$adj.r.squared
+
+log.reduce.anova <- anova(Reduced.log)
+Reduced.SSE.log = log.reduce.anova[nrow(log.reduce.anova),2]
+n = nrow(Movies)
+k = 10+2
+Reduced.AIC.log = n*log(Reduced.SSE.log/n)+2*k
+Reduced.BIC.log = n*log(Reduced.SSE.log/n)+k*log(n)
+```
+
+##### 3.1.6 Square Root Transformation
+```{r square root transformation, warning=F}
+Movies.sqrt <- Movies
+Movies.sqrt$popularity <- sqrt(Movies.sqrt$popularity)
+# full model with square root
+Full.sqrt <- lm(popularity~.,data=Movies.sqrt) # regression
+Full.sqrt.result <- summary(Full.sqrt)
+Full.sqrt.adjr <- Full.sqrt.result$adj.r.squared
+par(mfrow=c(2,2))
+plot(Full.sqrt)
+
+sqrt.full.anova <- anova(Full.sqrt)
+Full.SSE.sqrt = sqrt.full.anova[nrow(sqrt.full.anova),2]
+n = nrow(Movies)
+k = 16+2
+Full.AIC.sqrt = n*log(Full.SSE.sqrt/n)+2*k
+Full.BIC.sqrt = n*log(Full.SSE.sqrt/n)+k*log(n)
+
+# reduced model with square root
+Empty.sqrt <- lm(popularity~1,data=Movies.sqrt)
+forward.sqrt <- step(Empty.sqrt,direction='forward',scope=formula(Full.sqrt),trace=0)
+forward.sqrt.anova <- forward.sqrt$anova
+
+Reduced.sqrt <- lm(formula = popularity ~ vote_count + budget + revenue + runtime + dComedy + vote_average + dEnglish + dDrama + dColumbia + dDune + dThriller, data = Movies.sqrt) #regression
+
+Reduced.sqrt.result <- summary(Reduced.sqrt)
+Reduced.sqrt.adjr <- Reduced.sqrt.result$adj.r.squared
+par(mfrow=c(2,2))
+plot(Reduced.sqrt)
+
+sqrt.reduce.anova <- anova(Reduced.sqrt)
+Reduced.SSE.sqrt = sqrt.reduce.anova[nrow(sqrt.reduce.anova),2]
+n = nrow(Movies)
+k = 11+2
+Reduced.AIC.sqrt = n*log(Reduced.SSE.sqrt/n)+2*k
+Reduced.BIC.sqrt = n*log(Reduced.SSE.sqrt/n)+k*log(n)
+```
+
+##### 3.1.7 Decision of Transformation (combined with 3.1.3)
+```{r decision of transformation, warning= FALSE}
+library(rcompanion)
+par(mfrow = c(1,3))
+plotNormalHistogram(popularity_boxcox,main='Box-Cox Transformation')
+plotNormalHistogram(Movies.log$popularity,main='Log Transformation')
+plotNormalHistogram(Movies.sqrt$popularity,main='Square Root Transformation')
+```
+
+##### 3.1.8 Decision of Linear Regression by AIC and BIC
+```{r summary of linear regressions}
+linear.adjr2 = c(full.adjr,Reduced.adjr)
+boxcox.adjr2 = c(Full.boxcox.adjr,Reduced.boxcox.adjr)
+log.adjr2 = c(Full.log.adjr,Reduced.log.adjr)
+sqrt.adjr2 = c(Full.sqrt.adjr,Reduced.sqrt.adjr)
+r2 = data.frame(cbind(linear.adjr2,boxcox.adjr2,log.adjr2,sqrt.adjr2))
+rownames(r2) = c('Full Model','Reduced Model')
+
+linear.AIC = c(Full.AIC,Reduced.AIC)
+boxcox.AIC = c(Full.AIC.boxcox,Reduced.AIC.boxcox)
+log.AIC = c(Full.AIC.log,Reduced.AIC.log)
+sqrt.AIC = c(Full.AIC.sqrt,Reduced.AIC.sqrt)
+AIC = data.frame(cbind(linear.AIC,boxcox.AIC,log.AIC,sqrt.AIC))
+rownames(AIC) = c('Full Model','Reduced Model')
+
+linear.BIC = c(Full.BIC,Reduced.BIC)
+boxcox.BIC = c(Full.BIC.boxcox,Reduced.BIC.boxcox)
+log.BIC = c(Full.BIC.log,Reduced.BIC.log)
+sqrt.BIC = c(Full.BIC.sqrt,Reduced.BIC.sqrt)
+BIC = data.frame(cbind(linear.BIC,boxcox.BIC,log.BIC,sqrt.BIC))
+rownames(BIC) = c('Full Model','Reduced Model')
+```
+
+### 3.2 LASSO Regression
+```{r LASSO regression, warning=FALSE}
+library(glmnet)
+Movies.Lasso <- subset(Movies, select = -c(popularity)) 
+y <- Movies$popularity
+x <- data.matrix(Movies.Lasso)
+
+Movies.lasso <- cv.glmnet(x,y,alpha=1,standardize=TRUE)
+lambda.best.l <- Movies.lasso$lambda.min
+lasso.model.best <- glmnet(x,y,alpha=1,lambda=lambda.best.l,standardize=TRUE)
+lasso.models <- glmnet(x,y,alpha=1)
+
+par(mfrow = c(1,2))
+plot(Movies.lasso)
+plot(lasso.models,xvar="lambda")
+par(mfrow = c(1,1))
+```
+
+### 3.3 Ridge Regression
+```{r Ridge regression}
+Movies.ridge <- cv.glmnet(x,y,alpha=0)
+lambda.best.r <- Movies.ridge$lambda.min
+ridge.model.best <- glmnet(x,y,alpha=0,lambda=lambda.best.r)
+ridge.models <- glmnet(x,y,alpha=0)
+coef(ridge.model.best)
+par(mfrow = c(1,2))
+plot(Movies.ridge)
+plot(ridge.models,xvar="lambda")
+par(mfrow = c(1,1))
+```
+
+# Part4: Model Selection
+
+### 4.1 R-squared, MSE, AIC, and BIC
+```{r model selection, warning=FALSE}
+#Lasso
+predicted.l <- predict(lasso.model.best,s=lambda.best.l,newx=x)
+k <- lasso.model.best$df
+n <- lasso.model.best$nobs
+SSE <- sum((predicted.l - y)^2)
+MSE <- SSE/(n-k)
+SSTO <- sum((y - mean(y))^2)
+R_squared <- 1-SSE/SSTO
+Lasso.result <- data.frame(MSE=MSE,SSE=SSE,R_squared=R_squared)
+#Ridge
+predicted.r <- predict(ridge.model.best,s=lambda.best.r,newx=x)
+k <- ridge.model.best$df
+n <- ridge.model.best$nobs
+SSE <- sum((predicted.r - y)^2)
+MSE <- SSE/(n-k)
+SSTO <- sum((y - mean(y))^2)
+R_squared <- 1-SSE/SSTO
+Ridge.result <- data.frame(MSE=MSE,SSE=SSE,R_squared=R_squared)
+#Reduced Log Regression
+Reduced.SSE.log = log.reduce.anova[nrow(log.reduce.anova),2]
+Reduced.MSE.log = log.reduce.anova[nrow(log.reduce.anova),3]
+# summary(Reduced)
+Reduced.R2.log <- Reduced.log.result$r.squared
+k <- 10+2
+n <- 148
+Log.result <- data.frame(MSE=Reduced.SSE.log,SSE=Reduced.MSE.log,R_squared=Reduced.R2.log)
+
+```
+
+### 4.2 Model Selection Conclusion
+```{r}
+selection_table <- rbind(Lasso.result=Lasso.result,
+                         Ridge.result=Ridge.result,
+                         Log.result=Log.result)
+```
+
+# Part5: Movie Recommendation Function
+```{r}
+Movies_recommendation <- function(){
+  print(c('Here is the list of genres:',names(genre_count_nums)))
+  Genre = readline(prompt="Enter Preferred Genre: ")
+  recommend.index = c()
+  for (i in 1:nrow(Movies.organized)){
+    if (Genre %in% unlist(Movies.organized$genres[i])){
+      recommend.index = c(recommend.index,i)
+    }
+  }
+  Movies.recommend = data.frame(Movies.organized[recommend.index,])
+  Movies.recommend = Movies.recommend[order(-Movies.recommend$popularity),]
+  Movie = head(Movies.recommend$title,3)
+  print(c("The most popular three movies are:",Movie))
+}
+```
